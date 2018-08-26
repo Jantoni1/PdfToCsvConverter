@@ -17,6 +17,7 @@ using System.Windows.Media.Imaging;
 using System.Windows.Navigation;
 using System.Windows.Shapes;
 using System.Xml;
+using System.Collections;
 
 namespace PdfToCsvConverter
 {
@@ -34,18 +35,25 @@ namespace PdfToCsvConverter
             pdfList = new ObservableCollection<String>();
 
             pdfListBox.ItemsSource = pdfList;
-            pdfListBox.SelectionMode = SelectionMode.Extended;
-            pdfListBox.SelectionChanged += PdfListBox_SelectionChanged;
-            removeButton.Click += removeButton_Click;
-            addButton.Click += addButton_Click;
-            selectAllButton.Click += selectAllButton_Click;
-            browseDirectoryButton.Click += browseDirectoryButton_Click;
-            convertButton.Click += convertButton_Click;
             parseDictionary();
 
+            showScriptWindow = false;
         }
 
-        private Dictionary<string, string> properties;
+        bool showScriptWindow;
+
+        private ObservableCollection<String> pdfList;
+
+        private bool converting = false;
+
+        private XmlDocument doc;
+
+        private XmlElement root;
+
+        private string[] propertyNames = { "script_path", "output_path" };
+
+        private string[] alerts = { "Proszę wskazać gdzie znajduje się \n skrypt do konwersji plików.",
+                                    "Proszę wybrać folder docelowy \ndla konwertowanych plików."        };
 
         private void parseDictionary() {
             if (!System.IO.File.Exists("config.xml")) {
@@ -56,24 +64,20 @@ namespace PdfToCsvConverter
                                          MessageBoxImage.Error);
                 Application.Current.Shutdown();
             }
-            properties = new Dictionary<string, string>();
-            XmlDocument doc = new XmlDocument();
+            doc = new XmlDocument();
             doc.Load("config.xml");
-            foreach (XmlNode node in doc.DocumentElement.ChildNodes)
-            {
-                properties.Add(node.Name, node.InnerText);
-            }
+            validateConfig();
+            outputDirectoryPathLabel.Content = root.SelectSingleNode("output_path").InnerText;
+        }
 
-            if (!properties.ContainsKey("script_path") || properties["script_path"] == null
-                || properties["script_path"] == "" || !System.IO.File.Exists(properties["script_path"])) {
-                MessageBoxResult result = MessageBox.Show("Nie odnaleziono poprawnej śeicżki do skryptu \nkonwertującego"
-                    + "(script_path) w pliku config.xml. \nProgram zostanie zamknięty.",
-                                         "Błąd krytyczny",
-                                         MessageBoxButton.OK,
-                                         MessageBoxImage.Error);
-                    Application.Current.Shutdown();
-            }
+        private void validateConfig() {
+            root = doc.DocumentElement;
 
+            foreach (String property in propertyNames) {
+                if (root.SelectSingleNode(property).InnerText == null) {
+                    root.SetAttribute(property, "");
+                }
+            }
         }
 
         private void PdfListBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -85,29 +89,36 @@ namespace PdfToCsvConverter
             else {
                 selectAllButton.Header = "_Zaznacz wszystko";
             }
-        
+        }
+
+
+        private bool arePathsCorrect() {
+            bool areAllPathsCorrect = true;
+            for (int i = 0; i < propertyNames.Length; ++i) {
+                string property = propertyNames[i];
+                if (!System.IO.File.Exists(root.SelectSingleNode(property).InnerText)
+                    && !System.IO.Directory.Exists(root.SelectSingleNode(property).InnerText))
+                {
+                    MessageBox.Show(alerts[i],
+                                    "Błąd",
+                                    MessageBoxButton.OK,
+                                    MessageBoxImage.Warning);
+                    areAllPathsCorrect = false;
+                }
+            }
+            return areAllPathsCorrect;
         }
 
         private void convertButton_Click(object sender, RoutedEventArgs e)
         {
-            if ((string)outputDirectoryPathLabel.Content != "Nie wybrano")
-            {
-                if (pdfList.Count > 0) {
-                    lockUI();
-                    string outputPath = (string)outputDirectoryPathLabel.Content;
-                    new Thread(() =>
-                    {
-                        Thread.CurrentThread.IsBackground = true;
-                        convertPDFtoCSV(outputPath);
-                    }).Start();
-                }
-
-            }
-            else {
-                MessageBox.Show("Proszę wybrać folder docelowy \ndla konwertowanych plików.",
-                                    "Błąd",
-                                    MessageBoxButton.OK,
-                                    MessageBoxImage.Warning);
+            if (arePathsCorrect() && pdfList.Count > 0) {
+                lockUI();
+                string outputPath = (string)outputDirectoryPathLabel.Content;
+                new Thread(() =>
+                {
+                    Thread.CurrentThread.IsBackground = true;
+                    convertPDFtoCSV(outputPath);
+                }).Start();
             }
         }
 
@@ -151,9 +162,11 @@ namespace PdfToCsvConverter
 
                     System.Diagnostics.Process process = new System.Diagnostics.Process();
                     System.Diagnostics.ProcessStartInfo startInfo = new System.Diagnostics.ProcessStartInfo();
-                    startInfo.WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden;
+                    startInfo.WindowStyle =  showScriptWindow ? System.Diagnostics.ProcessWindowStyle.Normal : System.Diagnostics.ProcessWindowStyle.Hidden;
                     startInfo.FileName = "cmd.exe";
-                    startInfo.Arguments = "/c python \"" + properties["script_path"] + "\" \"" + filePath + "\" " + outputPath + " /b";
+                    startInfo.Arguments = "/" + (showScriptWindow ? "k" : "c")
+                        + " python \"" + root.SelectSingleNode("script_path").InnerText
+                        + "\" \"" + filePath + "\" " + root.SelectSingleNode("output_path").InnerText + " /b";
                     process.StartInfo = startInfo;
                     process.Start();
                     process.WaitForExit();
@@ -170,15 +183,11 @@ namespace PdfToCsvConverter
             }
         }
 
-        private ObservableCollection<String> pdfList;
-        private bool converting = false;
-
         private void ListBox_Drop(object sender, DragEventArgs e)
         {
 
             if (e.Data.GetDataPresent(DataFormats.FileDrop))
             {
-                //// Note that you can have more than one file.
                 string[] files = (string[])e.Data.GetData(DataFormats.FileDrop);
 
                 foreach(string fileName in files) {
@@ -206,24 +215,17 @@ namespace PdfToCsvConverter
 
         private void addButton_Click(object sender, RoutedEventArgs e)
         {
-            // Create OpenFileDialog 
             Microsoft.Win32.OpenFileDialog dlg = new Microsoft.Win32.OpenFileDialog();
 
-
-
-            //// Set filter for file extension and default file extension 
             dlg.DefaultExt = ".pdf";
             dlg.Filter = "PDF Files (*.pdf)|*.pdf";
             dlg.Multiselect = true;
 
-            // Display OpenFileDialog by calling ShowDialog method 
             Nullable<bool> result = dlg.ShowDialog();
 
 
-            //// Get the selected file names and display in a TextBox 
             if (result == true)
             {
-                // Open document 
                 foreach (String fileName in dlg.FileNames)
                 {
                     if (!pdfList.Contains(fileName))
@@ -255,10 +257,31 @@ namespace PdfToCsvConverter
             {
                 System.Windows.Forms.DialogResult result = dialog.ShowDialog();
                 if (result == System.Windows.Forms.DialogResult.OK) {
-                    outputDirectoryPathLabel.Content = dialog.SelectedPath;
+                    string directoryPath = dialog.SelectedPath.Replace('\\', '/');
+                    outputDirectoryPathLabel.Content = directoryPath;
+                    root.SelectSingleNode("output_path").InnerText = directoryPath;
                 }
             }
         }
+
+        private void advancedPropertiesButton_Click(object sender, RoutedEventArgs e) {
+            var advancedSettingsWindow = new AdvancedSettingsWindow();
+            advancedSettingsWindow.checkBox.IsChecked = showScriptWindow;
+            advancedSettingsWindow.scriptPathLabel.Content = root.SelectSingleNode("script_path").InnerText;
+
+            advancedSettingsWindow.ShowDialog();
+            if (advancedSettingsWindow.DialogResult == true) {
+                showScriptWindow = advancedSettingsWindow.checkBox.IsChecked.GetValueOrDefault();
+                root.SelectSingleNode("script_path").InnerText = (string)advancedSettingsWindow.scriptPathLabel.Content;
+            }
+        }
+
+        protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
+        {
+            doc.Save("config.xml");
+            base.OnClosing(e);
+        }
+
     }
 
 }
